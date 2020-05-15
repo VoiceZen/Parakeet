@@ -22,3 +22,6 @@ n_layers: 8
 n_channels: 64
 kernel_h: 3
 kernel_w: 3
+
+iteration: 3020000
+checkpoint: ../../pretrained/waveflow_res64_ljspeech_ckpt_1.0/step-3020000

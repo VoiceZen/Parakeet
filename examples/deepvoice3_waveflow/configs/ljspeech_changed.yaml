@@ -14,8 +14,10 @@ transform:
   hop_length: 256
 
   # mel
-  fmin: 125
-  fmax: 7600
+  # fmin: 125
+  # fmax: 7600
+  fmin: 0.0
+  fmax: 8000.0
   n_mels: 80
 
   # db scale

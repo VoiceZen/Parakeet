@@ -128,20 +128,34 @@ class WaveFlow():
     self.rank = rank
     self.nranks = nranks
     self.tb_logger = tb_logger
-    self.dtype = "float16" if config.use_fp16 else "float32"
+    # self.dtype = "float16" if config.use_fp16 else "float32"
+    self.dtype = "float32"
 
   def build(self):
+    """Initialize the model.
+
+    Args:
+        training (bool, optional): Whether the model is built for training or inference.
+            Defaults to True.
+
+    Returns:
+        None
+    """
     config = self.config
+    # dataset = LJSpeech(config, self.nranks, self.rank)
+    # self.trainloader = dataset.trainloader
+    # self.validloader = dataset.validloader
 
     waveflow = waveflow_modules.WaveFlowModule(config)
 
-    # Dry run once to create and initalize all necessary parameters.
-    audio = dg.to_variable(np.random.randn(1, 16000).astype(self.dtype))
-    mel = dg.to_variable(
-        np.random.randn(1, config.mel_bands, 63).astype(self.dtype))
-    waveflow(audio, mel)
-
-    iteration = io.load_parameters(waveflow, checkpoint_dir=self.checkpoint_dir)
+    
+    config.iteration=None
+    iteration = io.load_parameters(
+                model=waveflow,
+                checkpoint_dir=self.checkpoint_dir,
+                iteration=self.config.iteration,
+                checkpoint_path=self.config.checkpoint)
+    print("Rank {}: checkpoint loaded.".format(self.rank))
 
     for layer in waveflow.sublayers():
       if isinstance(layer, weight_norm.WeightNormWrapper):
@@ -158,31 +172,11 @@ class WaveFlow():
     start_time = time.time()
     audio = self.waveflow.synthesize(mel, sigma=self.config.sigma)
     syn_time = time.time() - start_time
+
+    
     return audio,start_time,syn_time
 
 
-def process_mel(mel,config):
-    
-    # spectrogram_magnitude = np.abs(input_mel)
-
-    # # mel_filter_bank shape: [n_mels, 1 + n_fft/2]
-    # mel_filter_bank = librosa.filters.mel(sr=config.sample_rate,
-    #                                     n_fft=config.fft_size,
-    #                                     n_mels=config.mel_bands,
-    #                                     fmin=config.mel_fmin,
-    #                                     fmax=config.mel_fmax)
-    # # mel shape: [n_mels, num_frames]
-    # mel = np.dot(mel_filter_bank, spectrogram_magnitude)
-
-    # Normalize mel.
-    clip_val = 1e-5
-    ref_constant = 100
-    mel = fluid.layers.clip(x=mel,min=clip_val,max=10)
-    mel = fluid.layers.scale( x=mel,scale=ref_constant)
-    mel = fluid.layers.exp(mel)
-    # mel = fluid.layers.log(mel)
-
-    return mel
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(
@@ -310,8 +304,10 @@ if __name__ == "__main__":
         
         mel_only = False
         if args.waveflow_checkpoint_dir:
-            fp = open(args.waveflow_config, 'rt')
-            waveflow_config = ruamel.yaml.safe_load(fp)
+            with open(args.waveflow_config, 'rt') as f:
+                waveflow_config = ruamel.yaml.safe_load(f)
+            # fp = open(args.waveflow_config, 'rt')
+            # waveflow_config = ruamel.yaml.safe_load(fp)
             waveflow_config['use_fp16'] = False
             waveflow_config['use_gpu'] = False
             
@@ -325,6 +321,22 @@ if __name__ == "__main__":
             for idx, line in enumerate(lines):
                 text = line[:-1]
                 dv3.eval()
+
+                #Only deepvoice output
+                # wav, attn = eval_model(dv3, text, replace_pronounciation_prob,
+                #                        min_level_db, ref_level_db, power,
+                #                        n_iter, win_length, hop_length,
+                #                        preemphasis,mel_only=False)
+                # plot_alignment(
+                #     attn,
+                #     os.path.join(synthesis_dir,
+                #                 "before_test_deepvoice3_{}_step_{}.png".format(idx, iteration)))
+                # sf.write(
+                #     os.path.join(synthesis_dir,
+                #                 "before_test_deepvoice3_{}_step{}.wav".format(idx, iteration)),
+                #     wav, sample_rate)
+    
+
                 wav_mel,linear_outputs, attn = eval_model(dv3, text, replace_pronounciation_prob,
                                        min_level_db, ref_level_db, power,
                                        n_iter, win_length, hop_length,
@@ -339,39 +351,61 @@ if __name__ == "__main__":
                     
                     linear_outputs_np = linear_outputs.numpy()[0].T  # (C, T)
                     
-                    denoramlized = linear_outputs_np * (-min_level_db) + min_level_db
+                    denoramlized = np.clip(linear_outputs_np, 0, 1)  * (-min_level_db) + min_level_db
                     lin_scaled = np.exp((denoramlized + ref_level_db) / 20 * np.log(10))
                     
                     #get mel spec
-                    S_mel = librosa.feature.melspectrogram(S=lin_scaled, n_mels=config['transform']['n_mels'], fmin=config['transform']['fmin'], fmax=config['transform']['fmax'], power=1.)
-                    
-                    #reshape
-                    a,b=S_mel.shape
-                    S_mel=S_mel.reshape(1,a,b)
-                    
-                    #Convert to fluid type
-                    S_mel=dg.to_variable(S_mel)
+                    mel_filter_bank = librosa.filters.mel(sr=sample_rate,
+                                              n_fft=waveflow_config.fft_size,
+                                              n_mels=waveflow_config.mel_bands,
+                                              fmin=waveflow_config.mel_fmin,
+                                              fmax=waveflow_config.mel_fmax)
+                    # mel = np.dot(mel_filter_bank, np.abs(lin_scaled)**power)
 
-                    #pass the mel to waveflow
-                    wav, start_time,syn_time = waveflow_model.infer(S_mel)
+                    mel = np.dot(mel_filter_bank, np.abs(lin_scaled)**2)
+                    # Normalize mel.
+                    clip_val = 1e-5
+                    ref_constant = 1
+                    mel = np.log(np.clip(mel, a_min=clip_val, a_max=None) * ref_constant)
+                    # S_mel = librosa.feature.melspectrogram(S=lin_scaled, n_mels=config['transform']['n_mels'], fmin=config['transform']['fmin'], fmax=config['transform']['fmax'], power=1.)
+                    
+                    # #reshape
+                    # a,b=S_mel.shape
+                    # S_mel=S_mel.reshape(1,a,b)
+                    
+                    # #Convert to fluid type
+                    # S_mel=dg.to_variable(S_mel)
+
+                    # #pass the mel to waveflow
+                    # wav, start_time,syn_time = waveflow_model.infer(S_mel)
 
                     
-                    max_norm=config['transform']['max_norm']
-                    amplitude_min = np.exp(min_level_db / 20 * np.log(10))  # 1e-5
+                    # max_norm=config['transform']['max_norm']
+                    # amplitude_min = np.exp(min_level_db / 20 * np.log(10))  # 1e-5
 
                     # db scale again
-                    S_mel = 20 * np.log10(np.maximum(amplitude_min,
-                                                    S_mel)) - ref_level_db
+                    # S_mel = 20 * np.log10(np.maximum(amplitude_min,
+                                                    # S_mel)) - ref_level_db
                     #Normalize again
-                    S_mel_norm = (S_mel - min_level_db) / (-min_level_db)
-                    S_mel_norm = max_norm * S_mel_norm
+                    # S_mel_norm = (S_mel - min_level_db) / (-min_level_db)
+                    # S_mel_norm = max_norm * S_mel_norm
 
                     #clip again to 0,1
-                    if config['transform']['clip_norm']:
-                        S_mel_norm = np.clip(S_mel_norm, 0, 1)
+                    # if config['transform']['clip_norm']:
+                    #     S_mel_norm = np.clip(S_mel_norm, 0, 1)
 
                     # processed_mel = process_mel(mel_new,waveflow_config)
                     # wav, start_time,syn_time = waveflow_model.infer(processed_mel)
+
+                    # reshape
+                    a, b = mel.shape
+                    S_mel_norm = mel.reshape(1, a, b)
+
+                    # Convert to fluid type
+                    S_mel_norm = dg.to_variable(S_mel_norm)
+                    
+                    #pass the mel to waveflow
+                    wav, start_time,syn_time = waveflow_model.infer(S_mel_norm)
 
                     wav = wav[0]
                     wav_time = wav.shape[0] / waveflow_config.sample_rate
@@ -386,9 +420,9 @@ if __name__ == "__main__":
                 plot_alignment(
                     attn,
                     os.path.join(synthesis_dir,
-                                 "test_{}_step_{}.png".format(idx, iteration)))
+                                 "after_test_{}_step_{}.png".format(idx, iteration)))
                 sf.write(
                     os.path.join(synthesis_dir,
-                                 "test_{}_step{}.wav".format(idx, iteration)),
+                                 "after_test_{}_step{}.wav".format(idx, iteration)),
                     wav, sample_rate) 
                 
