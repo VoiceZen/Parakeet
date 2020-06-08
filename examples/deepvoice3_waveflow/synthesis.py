@@ -37,6 +37,7 @@ import librosa
 
 from parakeet.models.waveflow import waveflow_modules
 from parakeet.modules import weight_norm
+from scipy import signal
 
 def add_config_options_to_parser(parser):
     parser.add_argument(
@@ -323,18 +324,18 @@ if __name__ == "__main__":
                 dv3.eval()
 
                 #Only deepvoice output
-                # wav, attn = eval_model(dv3, text, replace_pronounciation_prob,
-                #                        min_level_db, ref_level_db, power,
-                #                        n_iter, win_length, hop_length,
-                #                        preemphasis,mel_only=False)
-                # plot_alignment(
-                #     attn,
-                #     os.path.join(synthesis_dir,
-                #                 "before_test_deepvoice3_{}_step_{}.png".format(idx, iteration)))
-                # sf.write(
-                #     os.path.join(synthesis_dir,
-                #                 "before_test_deepvoice3_{}_step{}.wav".format(idx, iteration)),
-                #     wav, sample_rate)
+                wav, attn = eval_model(dv3, text, replace_pronounciation_prob,
+                                       min_level_db, ref_level_db, power,
+                                       n_iter, win_length, hop_length,
+                                       preemphasis,mel_only=False)
+                plot_alignment(
+                    attn,
+                    os.path.join(synthesis_dir,
+                                "before_test_deepvoice3_{}_step_{}.png".format(idx, iteration)))
+                sf.write(
+                    os.path.join(synthesis_dir,
+                                "before_test_deepvoice3_{}_step{}.wav".format(idx, iteration)),
+                    wav, sample_rate)
     
 
                 wav_mel,linear_outputs, attn = eval_model(dv3, text, replace_pronounciation_prob,
@@ -413,10 +414,15 @@ if __name__ == "__main__":
                                                                             syn_time))
                     # Denormalize audio from [-1, 1] to [-32768, 32768] int16 range.
                     wav = wav.numpy().astype("float32") * 32768.0
+                    if preemphasis > 0:
+                        wav = signal.lfilter([1.], [1., -preemphasis], wav)
                     wav = wav.astype('int16')
+                    # wav = wav.numpy().astype("float32") * 32768.0
+                    # wav = wav.astype('int16')
                     sample_rate = waveflow_config.sample_rate  
                 else:
                     wav=wav_mel
+                 
                 plot_alignment(
                     attn,
                     os.path.join(synthesis_dir,

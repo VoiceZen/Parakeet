@@ -62,7 +62,8 @@ class WaveFlow():
         self.rank = rank
         self.nranks = nranks
         self.tb_logger = tb_logger
-        self.dtype = "float16" if config.use_fp16 else "float32"
+        # self.dtype = "float16" if config.use_fp16 else "float32"
+        self.dtype = "float32"
 
     def build(self, training=True):
         """Initialize the model.
