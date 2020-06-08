@@ -40,7 +40,7 @@ def add_options_to_parser(parser):
     parser.add_argument(
         '--use_gpu',
         type=utils.str2bool,
-        default=True,
+        default=False,
         help="option to use gpu training")
     parser.add_argument(
         '--use_fp16',
